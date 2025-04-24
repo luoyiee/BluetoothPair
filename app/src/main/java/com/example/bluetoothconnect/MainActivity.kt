@@ -189,18 +189,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 检查是否有所需蓝牙权限
-    private fun hasBluetoothPermissions(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.BLUETOOTH_CONNECT
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true // 在Android 12以下版本，不需要BLUETOOTH_CONNECT权限
-        }
-    }
-
     @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -292,14 +280,14 @@ class MainActivity : AppCompatActivity() {
         // 初始状态更新
         updateBluetoothStatus(bluetoothAdapter?.state ?: BluetoothAdapter.ERROR)
 
-        if (hasAllRequiredPermissions()) {
+        if (hasBluetoothRequiredPermissions()) {
             updatePairList()
         }
     }
 
     override fun onResume() {
         super.onResume()
-        if (hasAllRequiredPermissions()) {
+        if (hasBluetoothRequiredPermissions()) {
             updatePairList()
             // 更新当前状态
             bluetoothAdapter?.let {
@@ -352,6 +340,7 @@ class MainActivity : AppCompatActivity() {
     private fun safeCancelDiscovery() {
         if (!hasBluetoothScanPermission()) {
             Log.w("Bluetooth", "无BLUETOOTH_SCAN权限，无法取消发现")
+            requestBluetoothPermissions()
             return
         }
         try {
@@ -377,7 +366,7 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "请先启用蓝牙", Toast.LENGTH_SHORT).show()
             }
             // 检查是否已有全部所需权限
-            hasAllRequiredPermissions() -> {
+            hasBluetoothRequiredPermissions() -> {
                 Log.i("Bluetooth", "checkPermissionsAndStartDiscovery")
                 startDiscovery()
             }
@@ -391,15 +380,12 @@ class MainActivity : AppCompatActivity() {
     /**
      * 检查是否拥有所有必需的权限
      */
-    private fun hasAllRequiredPermissions(): Boolean {
+    private fun hasBluetoothRequiredPermissions(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             hasPermission(Manifest.permission.BLUETOOTH_SCAN) &&
                     hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
-//                    && hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
         } else {
-            true
+            hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
         }
     }
 
@@ -416,15 +402,13 @@ class MainActivity : AppCompatActivity() {
      */
     private fun requestBluetoothPermissions() {
         val permissionsToRequest = mutableListOf<String>()
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (!hasPermission(Manifest.permission.BLUETOOTH_SCAN)) {
                 permissionsToRequest.add(Manifest.permission.BLUETOOTH_SCAN)
+                permissionsToRequest.add(Manifest.permission.BLUETOOTH_CONNECT)
             }
         } else {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                !hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
-            ) {
+            if (!hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)) {
                 permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
         }
@@ -522,7 +506,7 @@ class MainActivity : AppCompatActivity() {
             when (intent.action) {
                 BluetoothDevice.ACTION_FOUND -> {
                     // 检查是否有权限访问蓝牙设备信息
-                    if (hasBluetoothPermissions()) {
+                    if (hasBluetoothRequiredPermissions()) {
                         val device: BluetoothDevice? =
                             intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                         device?.let {
@@ -573,7 +557,7 @@ class MainActivity : AppCompatActivity() {
     // 获取已配对设备列表
     @SuppressLint("MissingPermission")
     fun getPairedDevices(): MutableList<BluetoothDevice>? {
-        return if (hasAllRequiredPermissions()) {
+        return if (hasBluetoothRequiredPermissions()) {
             bluetoothAdapter?.bondedDevices?.toMutableList()
         } else {
             mutableListOf()
