@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -12,14 +13,12 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.util.Log
 import android.view.View.GONE
 import android.view.View.VISIBLE
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.EditText
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
@@ -28,6 +27,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
 
 
 class MainActivity : AppCompatActivity() {
@@ -36,17 +37,21 @@ class MainActivity : AppCompatActivity() {
     private var bluetoothAdapter: BluetoothAdapter? = null
     private lateinit var deviceListView: ListView
     private lateinit var pairListView: ListView
+    private lateinit var connectListView: ListView
     private lateinit var tvBluetoothStatus: TextView
     private lateinit var tvPairTitle: TextView
     private lateinit var btnEnableBluetooth: Button
     private lateinit var deviceList: ArrayList<String>
     private lateinit var pairList: ArrayList<String>
+    private lateinit var connectList: ArrayList<String>
     private lateinit var deviceAdapter: ArrayAdapter<String>
     private lateinit var pairAdapter: ArrayAdapter<String>
+    private lateinit var connectAdapter: ArrayAdapter<String>
     private lateinit var btnPairDevice: Button
     private var selectedDevice: BluetoothDevice? = null
     private val discoveredDevices = mutableListOf<BluetoothDevice>()
     private var pairedDevices = mutableListOf<BluetoothDevice>()
+    private var connectDevices = mutableListOf<BluetoothDevice>()
 
     private val requestBluetooth = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -59,23 +64,132 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
-    // Pin配对广播
-    private val pairingPinReceiver = object : BroadcastReceiver() {
+    private val receiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
-                BluetoothDevice.ACTION_PAIRING_REQUEST -> {
-//                    handlePairingRequest(intent)
+                BluetoothDevice.ACTION_FOUND -> {
+                    // 检查是否有权限访问蓝牙设备信息
+                    if (hasBluetoothPermissions()) {
+                        val device: BluetoothDevice? =
+                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                        device?.let {
+                            val deviceName = try {
+                                it.name ?: "未知设备"
+                            } catch (e: SecurityException) {
+                                "未知设备(无权限)"
+                            }
+                            val deviceHardwareAddress = it.address // MAC地址
+                            val deviceInfo = if (it.bondState == BluetoothDevice.BOND_BONDED) {
+                                "$deviceName - $deviceHardwareAddress 已配对"
+                            } else {
+                                "$deviceName - $deviceHardwareAddress"
+                            }
+                            if (!deviceList.contains(deviceInfo) && device.name != null) {
+                                deviceList.add(deviceInfo)
+                                discoveredDevices.add(it)
+                                deviceAdapter.notifyDataSetChanged()
+                            }
+                        }
+                    } else {
+                        Toast.makeText(context, "需要蓝牙权限才能获取设备信息", Toast.LENGTH_SHORT)
+                            .show()
+                    }
+                }
+
+                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
+                    Toast.makeText(context, "设备搜索完成", Toast.LENGTH_SHORT).show()
+                }
+
+                BluetoothAdapter.ACTION_CONNECTION_STATE_CHANGED -> {
+                    Toast.makeText(context, "设备搜索完成", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
-    // 配对状态广播接收器
+    private val connectionReceiver = object : BroadcastReceiver() {
+
+        @SuppressLint("MissingPermission")
+        override fun onReceive(context: Context, intent: Intent) {
+            val action = intent.action
+            val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+            when (action) {
+                BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                    device?.let {
+                        Log.d("Bluetooth", "已连接到设备: ${it.name}")
+                    }
+                    updateConnectList()
+                }
+
+                BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
+                    device?.let {
+                        Log.d("Bluetooth", "设备已断开: ${it.name}")
+                    }
+                    updateConnectList()
+                }
+            }
+        }
+    }
+
+    // Pin配对广播
+    private val pairingPinReceiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                BluetoothDevice.ACTION_PAIRING_REQUEST -> {
+//                    abortBroadcast()//此方法重要，不能去掉
+//                    val device =
+//                        intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+//                    if (device != null) {
+//                        val mPasskey = intent.getIntExtra(
+//                            BluetoothDevice.EXTRA_PAIRING_KEY,
+//                            BluetoothDevice.ERROR
+//                        )
+//                        if (hasBluetoothPermissions()) {
+//                            device.setPairingConfirmation(true)//关键方法
+//                        }
+//                    }
+                }
+            }
+        }
+    }
+
+    // 配对状态广播
     private val pairingReceiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
+                BluetoothDevice.ACTION_PAIRING_REQUEST -> {
+                    val device =
+                        intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                    if (device != null) {
+                        val mPass = intent.getIntExtra(
+                            BluetoothDevice.EXTRA_PAIRING_KEY,
+                            BluetoothDevice.ERROR
+                        )
+                        Log.i("mPass", "$mPass")
+                        val type =
+                            intent.getIntExtra(
+                                BluetoothDevice.EXTRA_PAIRING_VARIANT,
+                                BluetoothDevice.ERROR
+                            )
+                        if (type == BluetoothDevice.PAIRING_VARIANT_PIN) {
+//                            abortBroadcast()
+//                            val pinBytes = "$mPass".toByteArray(Charsets.UTF_8)
+//                            device.setPin(pinBytes)
+//                            device.setPairingConfirmation(true)
+                        } else if (type == 3) {
+//                            abortBroadcast() // 关键：终止系统弹窗
+//                            try {
+//                                device.setPairingConfirmation(true)
+//                            } catch (e: Exception) {
+//                                e.printStackTrace()
+//                            }
+                        }
+                    }
+                }
+
                 BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
                     val device =
                         intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
@@ -88,12 +202,6 @@ class MainActivity : AppCompatActivity() {
                                 Toast.makeText(context, "${it.name} 配对成功", Toast.LENGTH_SHORT)
                                     .show()
                                 updatePairList()
-                                // 配对成功后取消注册PIN接收器
-                                try {
-                                    unregisterReceiver(pairingPinReceiver)
-                                } catch (e: IllegalArgumentException) {
-                                    // 接收器未注册
-                                }
                             }
 
                             BluetoothDevice.BOND_NONE -> {
@@ -145,7 +253,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
     // 蓝牙状态广播
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -158,6 +265,96 @@ class MainActivity : AppCompatActivity() {
                     updateBluetoothStatus(state)
                 }
             }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+        requestBluetoothPermissions()
+        val btnDiscoverDevices: Button = findViewById(R.id.btn_discover_devices)
+        deviceListView = findViewById(R.id.device_list)
+        pairListView = findViewById(R.id.pair_list)
+        connectListView = findViewById(R.id.connect_list)
+        tvBluetoothStatus = findViewById(R.id.tv_bluetooth_status)
+        tvPairTitle = findViewById(R.id.tv_pair_title)
+        btnEnableBluetooth = findViewById(R.id.btnEnableBluetooth)
+        btnPairDevice = findViewById(R.id.btn_pair_device)
+        btnPairDevice.setOnClickListener { pairSelectedDevice() }
+
+        deviceList = ArrayList()
+        pairList = ArrayList()
+        connectList = ArrayList()
+        deviceAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, deviceList)
+        deviceListView.adapter = deviceAdapter
+
+        pairAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, pairList)
+        pairListView.adapter = pairAdapter
+
+        connectAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, connectList)
+        connectListView.adapter = connectAdapter
+
+        deviceListView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
+            selectedDevice = discoveredDevices[position]
+            selectedDevice?.let {
+                btnPairDevice.text =
+                    if (it.bondState == BluetoothDevice.BOND_BONDED) "取消配对" else "配对设备"
+                btnPairDevice.visibility = VISIBLE
+            }
+        }
+        registerReceivers()
+        val pairingManager = BluetoothPairManager(this)
+
+        pairListView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
+            pairedDevices[position].let { device ->
+                pairingManager.unpairDevice(device, object : BluetoothPairManager.UnpairCallback {
+                    override fun onSuccess(device: BluetoothDevice) {
+                        runOnUiThread {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "已取消 ${device.name} 的配对",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            updatePairList()
+                        }
+                    }
+
+                    override fun onFailure(device: BluetoothDevice, error: String) {
+                    }
+                })
+            }
+        }
+
+        bluetoothManger = ContextCompat.getSystemService(this, BluetoothManager::class.java)
+        bluetoothAdapter = bluetoothManger?.adapter
+        if (bluetoothAdapter == null) {
+            Toast.makeText(this, "该设备不支持蓝牙", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+
+        btnEnableBluetooth.setOnClickListener {
+            if (!bluetoothAdapter!!.isEnabled) {
+                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                requestBluetooth.launch(enableBtIntent)
+            } else {
+                Toast.makeText(this, "蓝牙已启用", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        btnDiscoverDevices.setOnClickListener {
+            if (bluetoothAdapter!!.isEnabled) {
+                checkPermissionsAndStartDiscovery()
+            } else {
+                Toast.makeText(this, "请先启用蓝牙", Toast.LENGTH_SHORT).show()
+            }
+        }
+        updateBluetoothStatus(bluetoothAdapter?.state ?: BluetoothAdapter.ERROR)
+
+        if (hasBluetoothPermissions()) {
+            updatePairList()
+            updateConnectList()
         }
     }
 
@@ -189,106 +386,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @SuppressLint("MissingPermission")
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
-        requestBluetoothPermissions()
-        deviceListView = findViewById(R.id.device_list)
-        pairListView = findViewById(R.id.pair_list)
-        tvBluetoothStatus = findViewById(R.id.tv_bluetooth_status)
-        tvPairTitle = findViewById(R.id.tv_pair_title)
-        btnEnableBluetooth = findViewById(R.id.btnEnableBluetooth)
-        btnPairDevice = findViewById(R.id.btn_pair_device)
-        btnPairDevice.setOnClickListener { pairSelectedDevice() }
-        val btnDiscoverDevices: Button = findViewById(R.id.btn_discover_devices)
-
-        deviceList = ArrayList()
-        pairList = ArrayList()
-        deviceAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, deviceList)
-        deviceListView.adapter = deviceAdapter
-
-        pairAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, pairList)
-        pairListView.adapter = pairAdapter
-        // 设置列表点击监听
-        deviceListView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
-            selectedDevice = discoveredDevices[position]
-            selectedDevice?.let {
-                btnPairDevice.text =
-                    if (it.bondState == BluetoothDevice.BOND_BONDED) "取消配对" else "配对设备"
-                btnPairDevice.visibility = VISIBLE
-            }
-        }
-        registerReceivers()
-        val pairingManager = BluetoothPairManager(this)
-
-        pairListView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
-            pairedDevices[position].let { device ->
-                pairingManager.unpairDevice(device, object : BluetoothPairManager.UnpairCallback {
-                    override fun onSuccess(device: BluetoothDevice) {
-                        runOnUiThread {
-                            Toast.makeText(
-                                this@MainActivity,
-                                "已取消 ${device.name} 的配对",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                            updatePairList()
-                        }
-                    }
-
-                    override fun onFailure(device: BluetoothDevice, error: String) {
-                        runOnUiThread {
-                            AlertDialog.Builder(this@MainActivity)
-                                .setTitle("操作失败")
-                                .setMessage("无法取消配对: $error")
-                                .setPositiveButton("确定", null)
-                                .show()
-                        }
-                    }
-                })
-            }
-        }
-
-        bluetoothManger = ContextCompat.getSystemService(this, BluetoothManager::class.java)
-        bluetoothAdapter = bluetoothManger?.adapter
-        // 检查蓝牙支持
-        if (bluetoothAdapter == null) {
-            Toast.makeText(this, "该设备不支持蓝牙", Toast.LENGTH_SHORT).show()
-            finish()
-            return
-        }
-
-        // 检查设备是否支持蓝牙
-        btnEnableBluetooth.setOnClickListener {
-            if (!bluetoothAdapter!!.isEnabled) {
-                // 请求用户打开蓝牙
-                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                requestBluetooth.launch(enableBtIntent)
-            } else {
-                Toast.makeText(this, "蓝牙已启用", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        btnDiscoverDevices.setOnClickListener {
-            if (bluetoothAdapter!!.isEnabled) {
-                checkPermissionsAndStartDiscovery()
-            } else {
-                Toast.makeText(this, "请先启用蓝牙", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        // 初始状态更新
-        updateBluetoothStatus(bluetoothAdapter?.state ?: BluetoothAdapter.ERROR)
-
-        if (hasBluetoothRequiredPermissions()) {
-            updatePairList()
-        }
-    }
-
     override fun onResume() {
         super.onResume()
-        if (hasBluetoothRequiredPermissions()) {
+        if (hasBluetoothPermissions()) {
             updatePairList()
+            updateConnectList()
             // 更新当前状态
             bluetoothAdapter?.let {
                 updateBluetoothStatus(it.state)
@@ -296,6 +398,16 @@ class MainActivity : AppCompatActivity() {
         } else {
             requestBluetoothPermissions()
         }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        safeCancelDiscovery()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        unRegisterReceivers()
     }
 
     private fun registerReceivers() {
@@ -309,8 +421,21 @@ class MainActivity : AppCompatActivity() {
         val enableFilter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         registerReceiver(bluetoothStateReceiver, enableFilter)
 
-        val pairFilter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        val pairFilter = IntentFilter()
+        pairFilter.addAction(BluetoothDevice.ACTION_PAIRING_REQUEST)
+        pairFilter.addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
         registerReceiver(pairingReceiver, pairFilter)
+
+        // 注册配对请求接收器
+        val pFilter = IntentFilter()
+        filter.addAction(BluetoothDevice.ACTION_PAIRING_REQUEST)
+        registerReceiver(pairingPinReceiver, pFilter)
+
+        val connectionFilter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
+        }
+        registerReceiver(connectionReceiver, connectionFilter)
     }
 
     private fun unRegisterReceivers() {
@@ -323,23 +448,12 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-
-    override fun onPause() {
-        super.onPause()
-        safeCancelDiscovery()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        unRegisterReceivers()
-    }
-
     /**
      * 安全地取消蓝牙设备发现
      */
     private fun safeCancelDiscovery() {
-        if (!hasBluetoothScanPermission()) {
-            Log.w("Bluetooth", "无BLUETOOTH_SCAN权限，无法取消发现")
+        if (!hasBluetoothPermissions()) {
+            Log.w("Bluetooth", "无蓝牙权限，无法取消发现")
             requestBluetoothPermissions()
             return
         }
@@ -361,16 +475,15 @@ class MainActivity : AppCompatActivity() {
      */
     private fun checkPermissionsAndStartDiscovery() {
         when {
-            // 首先检查蓝牙是否启用
             !bluetoothAdapter!!.isEnabled -> {
                 Toast.makeText(this, "请先启用蓝牙", Toast.LENGTH_SHORT).show()
             }
-            // 检查是否已有全部所需权限
-            hasBluetoothRequiredPermissions() -> {
+
+            hasBluetoothPermissions() -> {
                 Log.i("Bluetooth", "checkPermissionsAndStartDiscovery")
                 startDiscovery()
             }
-            // 需要请求权限
+
             else -> {
                 requestBluetoothPermissions()
             }
@@ -378,9 +491,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 检查是否拥有所有必需的权限
+     * 检查是否拥有蓝牙权限
      */
-    private fun hasBluetoothRequiredPermissions(): Boolean {
+    private fun hasBluetoothPermissions(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             hasPermission(Manifest.permission.BLUETOOTH_SCAN) &&
                     hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
@@ -412,7 +525,6 @@ class MainActivity : AppCompatActivity() {
                 permissionsToRequest.add(Manifest.permission.ACCESS_FINE_LOCATION)
             }
         }
-
         if (permissionsToRequest.isNotEmpty()) {
             ActivityCompat.requestPermissions(
                 this,
@@ -431,9 +543,8 @@ class MainActivity : AppCompatActivity() {
         deviceAdapter.notifyDataSetChanged()
 
         safeCancelDiscovery()
-        // 检查是否有发现权限
-        if (!hasBluetoothScanPermission()) {
-            Toast.makeText(this, "无蓝牙扫描权限", Toast.LENGTH_SHORT).show()
+        if (!hasBluetoothPermissions()) {
+            Toast.makeText(this, "无蓝牙权限", Toast.LENGTH_SHORT).show()
             requestBluetoothPermissions()
             return
         }
@@ -449,45 +560,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * 检查是否有蓝牙扫描权限
-     */
-    private fun hasBluetoothScanPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            hasPermission(Manifest.permission.BLUETOOTH_SCAN)
-        } else {
-            true
-        }
-    }
-
-    /**
-     * 检查是否有蓝牙连接权限
-     */
-    private fun hasBluetoothConnectPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            hasPermission(Manifest.permission.BLUETOOTH_CONNECT)
-        } else {
-            true
-        }
-    }
-
     // 配对设备
     @SuppressLint("MissingPermission")
     private fun pairSelectedDevice() {
-        if (!hasBluetoothConnectPermission()) {
+        if (!hasBluetoothPermissions()) {
             requestBluetoothPermissions()
             return
         }
         selectedDevice?.let { device ->
             if (device.bondState == BluetoothDevice.BOND_NONE) {
                 try {
-                    // 注册配对请求接收器
-                    registerReceiver(
-                        pairingPinReceiver,
-                        IntentFilter(BluetoothDevice.ACTION_PAIRING_REQUEST)
-                    )
-                    // 开始配对
-                    if (!device.createBond()) {
+                    val success = device.createBond()
+                    if (!success) {
                         Toast.makeText(this, "配对请求发送失败", Toast.LENGTH_SHORT).show()
                     }
                 } catch (e: SecurityException) {
@@ -495,47 +579,6 @@ class MainActivity : AppCompatActivity() {
                 }
             } else if (device.bondState == BluetoothDevice.BOND_BONDED) {
                 updatePairList()
-            }
-        }
-    }
-
-    // 广播接收器，用于接收发现的设备
-    private val receiver = object : BroadcastReceiver() {
-        @SuppressLint("MissingPermission")
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                BluetoothDevice.ACTION_FOUND -> {
-                    // 检查是否有权限访问蓝牙设备信息
-                    if (hasBluetoothRequiredPermissions()) {
-                        val device: BluetoothDevice? =
-                            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                        device?.let {
-                            val deviceName = try {
-                                it.name ?: "未知设备"
-                            } catch (e: SecurityException) {
-                                "未知设备(无权限)"
-                            }
-                            val deviceHardwareAddress = it.address // MAC地址
-                            val deviceInfo = if (it.bondState == BluetoothDevice.BOND_BONDED) {
-                                "$deviceName - $deviceHardwareAddress 已配对"
-                            } else {
-                                "$deviceName - $deviceHardwareAddress"
-                            }
-                            if (!deviceList.contains(deviceInfo) && device.name != null) {
-                                deviceList.add(deviceInfo)
-                                discoveredDevices.add(it)
-                                deviceAdapter.notifyDataSetChanged()
-                            }
-                        }
-                    } else {
-                        Toast.makeText(context, "需要蓝牙权限才能获取设备信息", Toast.LENGTH_SHORT)
-                            .show()
-                    }
-                }
-
-                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                    Toast.makeText(context, "设备搜索完成", Toast.LENGTH_SHORT).show()
-                }
             }
         }
     }
@@ -554,14 +597,85 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 获取已配对设备列表
+    @SuppressLint("MissingPermission")
+    private fun updateConnectList() {
+        connectDevices = getConnectedDevices()
+        connectList.clear()
+        // 添加已配对设备
+        connectDevices.forEach { device ->
+            connectList.add("${device.name ?: "未知设备"} - ${device.address} (已连接)")
+        }
+        connectAdapter.notifyDataSetChanged()
+    }
+
+    /**
+     * 获取已配对设备列表
+     * @return
+     */
     @SuppressLint("MissingPermission")
     fun getPairedDevices(): MutableList<BluetoothDevice>? {
-        return if (hasBluetoothRequiredPermissions()) {
+        return if (hasBluetoothPermissions()) {
             bluetoothAdapter?.bondedDevices?.toMutableList()
         } else {
             mutableListOf()
         }
+    }
+
+    /**
+     * 获取已连接设备列表
+     * @return
+     */
+    @SuppressLint("MissingPermission")
+    fun getConnectedDevices(): MutableList<BluetoothDevice> {
+        val result: MutableSet<BluetoothDevice> = HashSet()
+        val deviceSet: MutableSet<BluetoothDevice> = HashSet()
+
+        //获取BLE的设备, profile只能是GATT或者GATT_SERVER
+        val gattDevices: List<BluetoothDevice>? =
+            bluetoothManger!!.getConnectedDevices(BluetoothProfile.GATT)
+        if (!gattDevices.isNullOrEmpty()) {
+            deviceSet.addAll(gattDevices)
+        }
+        //获取经典已配对的设备
+        pairedDevices = getPairedDevices()!!
+        for (dev in pairedDevices) {
+            val type: String = when (dev.type) {
+                BluetoothDevice.DEVICE_TYPE_CLASSIC -> "经典"
+                BluetoothDevice.DEVICE_TYPE_LE -> "BLE"
+                BluetoothDevice.DEVICE_TYPE_DUAL -> "双模"
+                else -> "未知"
+            }
+            var connect = "设备未连接"
+            if (isConnected(dev.address)) {
+                result.add(dev)
+                connect = "设备已连接"
+            }
+            Log.d("zbh", connect + ", address = " + dev.address + "(" + type + "), name --> " + dev.name
+            )
+        }
+        return result.toMutableList()
+    }
+
+    //TODO 根据mac地址判断是否已连接(这里参数可以直接用BluetoothDevice对象)
+    private fun isConnected(macAddress: String?): Boolean {
+        if (!BluetoothAdapter.checkBluetoothAddress(macAddress)) {
+            return false
+        }
+        val device = bluetoothAdapter!!.getRemoteDevice(macAddress)
+        val isConnectedMethod: Method?
+        var isConnected: Boolean
+        try {
+            isConnectedMethod = BluetoothDevice::class.java.getDeclaredMethod("isConnected")
+            isConnectedMethod.isAccessible = true
+            isConnected = (isConnectedMethod.invoke(device) as? Boolean)!!
+        } catch (e: NoSuchMethodException) {
+            isConnected = false
+        } catch (e: IllegalAccessException) {
+            isConnected = false
+        } catch (e: InvocationTargetException) {
+            isConnected = false
+        }
+        return isConnected
     }
 
     companion object {
