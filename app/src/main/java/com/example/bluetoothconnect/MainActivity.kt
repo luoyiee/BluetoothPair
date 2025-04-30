@@ -638,7 +638,10 @@ class MainActivity : AppCompatActivity() {
         }
         //获取经典已配对的设备
         pairedDevices = getPairedDevices()!!
-        for (dev in pairedDevices) {
+        if (pairedDevices.size >0){
+            deviceSet.addAll(pairedDevices.toMutableSet())
+        }
+        for (dev in deviceSet) {
             val type: String = when (dev.type) {
                 BluetoothDevice.DEVICE_TYPE_CLASSIC -> "经典"
                 BluetoothDevice.DEVICE_TYPE_LE -> "BLE"
