@@ -2,17 +2,32 @@ package com.example.bluetoothconnect
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.bluetooth.le.ScanFilter
+import android.companion.AssociationInfo
+import android.companion.AssociationRequest
+import android.companion.BluetoothDeviceFilter
+import android.companion.BluetoothLeDeviceFilter
+import android.companion.CompanionDeviceManager
+import android.companion.CompanionDeviceService
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.IntentSender
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelUuid
 import android.util.Log
 import android.view.View.GONE
 import android.view.View.VISIBLE
@@ -22,19 +37,33 @@ import android.widget.Button
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
+import androidx.annotation.NonNull
+import androidx.annotation.RequiresApi
+import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.suspendCancellableCoroutine
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
+import java.util.UUID
+import java.util.concurrent.Executor
+import java.util.regex.Pattern
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 
 class MainActivity : AppCompatActivity() {
 
     private var bluetoothManger: BluetoothManager? = null
     private var bluetoothAdapter: BluetoothAdapter? = null
+    private lateinit var audioManager: AudioManager
     private lateinit var deviceListView: ListView
     private lateinit var pairListView: ListView
     private lateinit var connectListView: ListView
@@ -108,9 +137,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+
     private val connectionReceiver = object : BroadcastReceiver() {
 
-        @SuppressLint("MissingPermission")
+        @SuppressLint("MissingPermission", "NewApi")
         override fun onReceive(context: Context, intent: Intent) {
             val action = intent.action
             val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
@@ -120,6 +150,8 @@ class MainActivity : AppCompatActivity() {
                         Log.d("Bluetooth", "已连接到设备: ${it.name}")
                     }
                     updateConnectList()
+                    stopScan()
+                    bluetoothAdapter?.cancelDiscovery()
                 }
 
                 BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
@@ -157,7 +189,7 @@ class MainActivity : AppCompatActivity() {
 
     // 配对状态广播
     private val pairingReceiver = object : BroadcastReceiver() {
-        @SuppressLint("MissingPermission")
+        @SuppressLint("MissingPermission", "NewApi")
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 BluetoothDevice.ACTION_PAIRING_REQUEST -> {
@@ -202,6 +234,7 @@ class MainActivity : AppCompatActivity() {
                                 Toast.makeText(context, "${it.name} 配对成功", Toast.LENGTH_SHORT)
                                     .show()
                                 updatePairList()
+                                stopScan()
                             }
 
                             BluetoothDevice.BOND_NONE -> {
@@ -268,6 +301,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val volumeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == "android.media.VOLUME_CHANGED_ACTION") {
+                val newVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                Log.i("Bluetooth Volume", "Volume changed: $newVolume")
+            }
+        }
+    }
+
     @SuppressLint("MissingPermission")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -295,6 +337,7 @@ class MainActivity : AppCompatActivity() {
         connectAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, connectList)
         connectListView.adapter = connectAdapter
 
+
         deviceListView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
             selectedDevice = discoveredDevices[position]
             selectedDevice?.let {
@@ -303,8 +346,11 @@ class MainActivity : AppCompatActivity() {
                 btnPairDevice.visibility = VISIBLE
             }
         }
+
         registerReceivers()
         val pairingManager = BluetoothPairManager(this)
+
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         pairListView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
             pairedDevices[position].let { device ->
@@ -324,6 +370,10 @@ class MainActivity : AppCompatActivity() {
                     }
                 })
             }
+        }
+
+        connectListView.onItemClickListener = AdapterView.OnItemClickListener { _, _, position, _ ->
+            disconnectBleDevice(connectDevices[position].address)
         }
 
         bluetoothManger = ContextCompat.getSystemService(this, BluetoothManager::class.java)
@@ -361,6 +411,14 @@ class MainActivity : AppCompatActivity() {
     private fun updateBluetoothStatus(state: Int) {
         var statusText = ""
         when (state) {
+            BluetoothAdapter.STATE_ON -> {
+                statusText = "蓝牙状态: 已开启"
+                btnEnableBluetooth.visibility = GONE
+                Log.i("Bluetooth", "STATE_ON_StartDiscovery")
+//                startDiscovery()
+//                scanByCDM()
+            }
+
             BluetoothAdapter.STATE_OFF -> {
                 statusText = "蓝牙状态: 已关闭"
                 btnEnableBluetooth.visibility = VISIBLE
@@ -370,11 +428,12 @@ class MainActivity : AppCompatActivity() {
                 deviceAdapter.notifyDataSetChanged()
             }
 
-            BluetoothAdapter.STATE_ON -> {
-                statusText = "蓝牙状态: 已开启"
-                btnEnableBluetooth.visibility = GONE
-                Log.i("Bluetooth", "STATE_ON_StartDiscovery")
-                startDiscovery()
+            BluetoothAdapter.STATE_TURNING_ON -> {
+                statusText = "蓝牙状态: 正在开启"
+            }
+
+            BluetoothAdapter.STATE_TURNING_OFF -> {
+                statusText = "蓝牙状态: 正在关闭"
             }
         }
 
@@ -405,9 +464,12 @@ class MainActivity : AppCompatActivity() {
         safeCancelDiscovery()
     }
 
+    @SuppressLint("NewApi")
     override fun onDestroy() {
         super.onDestroy()
         unRegisterReceivers()
+        stopScan() // 停止关联请求
+        // macAddress?.let { stopObservePresence(it) } // 停止观察
     }
 
     private fun registerReceivers() {
@@ -436,6 +498,13 @@ class MainActivity : AppCompatActivity() {
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
         }
         registerReceiver(connectionReceiver, connectionFilter)
+
+
+        val voiceFilter = IntentFilter("android.media.VOLUME_CHANGED_ACTION");
+        registerReceiver(volumeReceiver, voiceFilter); // 注册接收器
+
+        // 在Activity/Fragment中调用
+
     }
 
     private fun unRegisterReceivers() {
@@ -481,7 +550,8 @@ class MainActivity : AppCompatActivity() {
 
             hasBluetoothPermissions() -> {
                 Log.i("Bluetooth", "checkPermissionsAndStartDiscovery")
-                startDiscovery()
+                // startDiscovery()
+                scanByCDM()
             }
 
             else -> {
@@ -533,6 +603,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
     }
+
 
     /**
      * 安全地开始设备发现
@@ -638,7 +709,7 @@ class MainActivity : AppCompatActivity() {
         }
         //获取经典已配对的设备
         pairedDevices = getPairedDevices()!!
-        if (pairedDevices.size >0){
+        if (pairedDevices.size > 0) {
             deviceSet.addAll(pairedDevices.toMutableSet())
         }
         for (dev in deviceSet) {
@@ -653,7 +724,9 @@ class MainActivity : AppCompatActivity() {
                 result.add(dev)
                 connect = "设备已连接"
             }
-            Log.d("zbh", connect + ", address = " + dev.address + "(" + type + "), name --> " + dev.name
+            Log.d(
+                "zbh",
+                connect + ", address = " + dev.address + "(" + type + "), name --> " + dev.name
             )
         }
         return result.toMutableList()
@@ -681,7 +754,194 @@ class MainActivity : AppCompatActivity() {
         return isConnected
     }
 
+
+    @SuppressLint("MissingPermission")
+    fun disconnectBleDevice(mac: String) {
+        gattConnections[mac]?.let { gatt ->
+            // 步骤1：触发断开操作
+            gatt.disconnect()
+
+            // 步骤2：延迟关闭资源（必须等待断开完成）
+            Handler(Looper.getMainLooper()).postDelayed({
+                gatt.close() // 关键！防止内存泄漏
+                gattConnections.remove(mac)
+                Log.i("Bluetooth", "已释放 $mac 资源")
+            }, 300) // 延迟 300ms 确保断开完成
+        }
+    }
+
+
+    /**
+     * 调节音量
+     */
+    fun setBluetoothVolume(target: Int = DEFAULT_BLUETOOTH_VOLUME) {
+        val currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        Log.i("Bluetooth Volume", "Current Volume: $currentVolume, Max Volume: $maxVolume")
+        val validRange = 0..maxVolume
+        when {
+            target !in validRange -> Log.e("Bluetooth", "Invalid volume: $target (Max: $maxVolume)")
+            else -> {
+                audioManager.setStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    target,
+                    AudioManager.FLAG_SHOW_UI
+                )
+                Log.i("Bluetooth", "Successfully set volume to: $target")
+            }
+        }
+    }
+
+
+    @SuppressLint("MissingPermission")
+    private val cdmLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        // 处理结果（不再需要 requestCode 判断）
+//        if (result.resultCode == Activity.RESULT_OK) {
+//            val deviceToPair: BluetoothDevice? =
+//                result.data?.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE)
+//            deviceToPair?.createBond()
+//        } else {
+//            Log.e("CDM", "用户取消设备选择")
+//        }
+    }
+
+
+    private val companionDeviceManager: CompanionDeviceManager by lazy {
+        getSystemService(Context.COMPANION_DEVICE_SERVICE) as CompanionDeviceManager
+    }
+
+    // 添加成员变量保存关联ID
+    private var mAssociationId: Int? = null
+    private var mObservedMac: String? = null
+
+
+    // 添加停止扫描的方法
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    fun stopScan() {
+//        mAssociationId?.let { id ->
+//            companionDeviceManager.disassociate(id)
+//            mAssociationId = null
+//        }
+//        companionDeviceManager.stopObservingDevicePresence("41:42:F2:B6:A3:D4")
+    }
+
+
+    // 实现 CompanionDeviceService
+    @SuppressLint("NewApi")
+    class MyDeviceService : CompanionDeviceService() {
+        override fun onDeviceAppeared(associationInfo: AssociationInfo) {
+            Log.d(
+                "Presence",
+                "设备进入范围: ${associationInfo.associatedDevice?.bluetoothDevice?.address}"
+            )
+        }
+
+        override fun onDeviceDisappeared(associationInfo: AssociationInfo) {
+            Log.d("Presence", "设备离开范围: ")
+        }
+    }
+
+
+    // 在类顶部添加成员变量
+    private val gattConnections = mutableMapOf<String, BluetoothGatt?>()
+
+    // 自定义Gatt回调
+    private val gattCallback = object : BluetoothGattCallback() {
+        @SuppressLint("MissingPermission")
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> {
+                    Log.i("Bluetooth", "BLE已连接 ${gatt.device.address}")
+                    gatt.discoverServices() // 开始发现服务
+                }
+
+                BluetoothProfile.STATE_DISCONNECTED -> {
+                    Log.w("Bluetooth", "BLE断开 ${gatt.device.address}")
+                    gatt.close()
+                    gattConnections.remove(gatt.device.address)
+                }
+            }
+        }
+    }
+
+
+    @SuppressLint("NewApi")
+    private fun scanByCDM() {
+
+        val uuid = ParcelUuid(UUID.fromString("00002299-0000-1000-8000-00805f9b34fb"))
+        val deviceFilter: BluetoothDeviceFilter = BluetoothDeviceFilter.Builder()
+            .setNamePattern(Pattern.compile("AMOI"))
+//            .addServiceUuid(ParcelUuid(UUID(0x123abcL, -1L)), null)
+            .build()
+
+        val bleFilter: BluetoothLeDeviceFilter = BluetoothLeDeviceFilter.Builder()
+            .setScanFilter(ScanFilter.Builder().setServiceUuid(uuid).build())
+            .build()
+
+        val pairingRequest = AssociationRequest.Builder()
+            .addDeviceFilter(deviceFilter)
+            .addDeviceFilter(bleFilter)
+//            .setSingleDevice(true)
+            .build()
+
+        companionDeviceManager.associate(
+            pairingRequest,
+            object : CompanionDeviceManager.Callback() {
+                override fun onAssociationPending(intentSender: IntentSender) {
+                    cdmLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+                    Log.i("Bluetooth", "Successfully set volume to:")
+                }
+
+                @SuppressLint("MissingPermission", "NewApi")
+                @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+                override fun onAssociationCreated(associationInfo: AssociationInfo) {
+                    mAssociationId = associationInfo.id
+                    val device =
+                        if (associationInfo.associatedDevice?.bluetoothDevice != null) associationInfo.associatedDevice?.bluetoothDevice
+                        else associationInfo.associatedDevice?.bleDevice?.device
+
+                    device?.let { btDevice ->
+                        // 1. 先处理传统蓝牙配对（如果必要）
+                        if (btDevice.type == BluetoothDevice.DEVICE_TYPE_CLASSIC) {
+                            if (btDevice.bondState == BluetoothDevice.BOND_NONE) {
+                                btDevice.createBond()
+                            }
+                        }
+
+                        // 2. 启动设备存在监听
+                        mObservedMac = associationInfo.deviceMacAddress.toString()
+                        mObservedMac?.let { mac ->
+                            companionDeviceManager.startObservingDevicePresence(mac)
+                            Log.i("Bluetooth", "开始监听设备存在: $mac")
+                        }
+
+                        // 3. 启动BLE连接（关键新增部分）
+                        // 使用 TRANSPORT_LE 明确指定BLE传输
+                        if (btDevice.type == BluetoothDevice.DEVICE_TYPE_LE) {
+                            val gatt = btDevice.connectGatt(
+                                this@MainActivity,
+                                false,
+                                gattCallback,
+                                BluetoothDevice.TRANSPORT_LE
+                            )
+                            gattConnections[btDevice.address] = gatt
+                        }
+                    }
+                }
+
+                override fun onFailure(error: CharSequence?) {
+                }
+            },
+            null
+        )
+
+    }
+
+
     companion object {
         private const val REQUEST_BLUETOOTH_PERMISSIONS = 1001
+        private const val DEFAULT_BLUETOOTH_VOLUME = 5
     }
 }

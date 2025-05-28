@@ -3,9 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.BLUETOOTH"
-
+        android:maxSdkVersion="30"
         />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30"
         />
 
     <!-- 对于 Android 12 及以上版本 -->
@@ -20,9 +21,26 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"
         android:maxSdkVersion="30"/>
 
+    <!-- Required for running in background indefinitely -->
+<!--    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />-->
+<!--    <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />-->
+<!--    <uses-permission android:name="android.permission.REQUEST_COMPANION_PROFILE_WATCH" />-->
+    <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        android:maxSdkVersion="26" />
+
+    <!-- 声明需要蓝牙功能（但允许设备不支持） -->
     <uses-feature
         android:name="android.hardware.bluetooth"
-        android:required="true" />
+        android:required="false" />
+
+    <uses-feature android:name="android.software.companion_device_setup" />
+
+    <!-- 如果使用低功耗蓝牙（BLE），额外声明 -->
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
 
     <application
         android:allowBackup="true"
@@ -43,6 +61,22 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+
+<!--        <service-->
+<!--            android:name=".WatchService"-->
+<!--            android:foregroundServiceType="connectedDevice"-->
+<!--            android:permission="android.permission.FOREGROUND_SERVICE" />-->
+
+
+        <service
+            android:name=".MainActivity$MyDeviceService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>
