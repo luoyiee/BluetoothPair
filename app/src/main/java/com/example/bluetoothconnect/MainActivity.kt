@@ -39,24 +39,15 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.NonNull
 import androidx.annotation.RequiresApi
-import androidx.annotation.RequiresPermission
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
-import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.suspendCancellableCoroutine
+import androidx.core.content.IntentCompat
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.util.UUID
-import java.util.concurrent.Executor
 import java.util.regex.Pattern
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 
 class MainActivity : AppCompatActivity() {
@@ -796,15 +787,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("MissingPermission")
     private val cdmLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        // 处理结果（不再需要 requestCode 判断）
-//        if (result.resultCode == Activity.RESULT_OK) {
-//            val deviceToPair: BluetoothDevice? =
-//                result.data?.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE)
-//            deviceToPair?.createBond()
-//        } else {
-//            Log.e("CDM", "用户取消设备选择")
-//        }
+    ) {
     }
 
 
@@ -891,43 +874,19 @@ class MainActivity : AppCompatActivity() {
             object : CompanionDeviceManager.Callback() {
                 override fun onAssociationPending(intentSender: IntentSender) {
                     cdmLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
-                    Log.i("Bluetooth", "Successfully set volume to:")
+                    Log.i("Bluetooth", "onAssociationPending")
                 }
 
-                @SuppressLint("MissingPermission", "NewApi")
-                @RequiresApi(Build.VERSION_CODES.TIRAMISU)
                 override fun onAssociationCreated(associationInfo: AssociationInfo) {
+                    Log.i("Bluetooth", "onAssociationCreated")
                     mAssociationId = associationInfo.id
-                    val device =
-                        if (associationInfo.associatedDevice?.bluetoothDevice != null) associationInfo.associatedDevice?.bluetoothDevice
+                    val device = if (associationInfo.associatedDevice?.bluetoothDevice != null) associationInfo.associatedDevice?.bluetoothDevice
                         else associationInfo.associatedDevice?.bleDevice?.device
-
-                    device?.let { btDevice ->
-                        // 1. 先处理传统蓝牙配对（如果必要）
-                        if (btDevice.type == BluetoothDevice.DEVICE_TYPE_CLASSIC) {
-                            if (btDevice.bondState == BluetoothDevice.BOND_NONE) {
-                                btDevice.createBond()
-                            }
+                    device?.apply {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            companionDeviceManager.startObservingDevicePresence(device.address)
                         }
-
-                        // 2. 启动设备存在监听
-                        mObservedMac = associationInfo.deviceMacAddress.toString()
-                        mObservedMac?.let { mac ->
-                            companionDeviceManager.startObservingDevicePresence(mac)
-                            Log.i("Bluetooth", "开始监听设备存在: $mac")
-                        }
-
-                        // 3. 启动BLE连接（关键新增部分）
-                        // 使用 TRANSPORT_LE 明确指定BLE传输
-                        if (btDevice.type == BluetoothDevice.DEVICE_TYPE_LE) {
-                            val gatt = btDevice.connectGatt(
-                                this@MainActivity,
-                                false,
-                                gattCallback,
-                                BluetoothDevice.TRANSPORT_LE
-                            )
-                            gattConnections[btDevice.address] = gatt
-                        }
+                        handleSelectedDevice(device)
                     }
                 }
 
@@ -937,6 +896,30 @@ class MainActivity : AppCompatActivity() {
             null
         )
 
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun handleSelectedDevice(device: BluetoothDevice) {
+        when (device.type) {
+            BluetoothDevice.DEVICE_TYPE_CLASSIC,
+            BluetoothDevice.DEVICE_TYPE_DUAL -> {
+                if (device.bondState == BluetoothDevice.BOND_NONE) {
+                    // 启动配对流程
+                    device.createBond()
+                }
+            }
+
+            BluetoothDevice.DEVICE_TYPE_LE -> {
+                // BLE设备直接连接
+                val gatt = device.connectGatt(
+                    this@MainActivity,
+                    false,
+                    gattCallback,
+                    BluetoothDevice.TRANSPORT_LE
+                )
+                gattConnections[device.address] = gatt
+            }
+        }
     }
 
 
